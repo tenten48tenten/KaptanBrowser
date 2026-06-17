@@ -1,72 +1,64 @@
-name: Kaptan Browser - Android APK Build
+# Build APKs for Kiwi Browser Next
+name: 'Any branch: Build APK'
 
+# Controls when the action will run. Triggers the workflow on pull request events or manual trigger.
 on:
-  push:
-      branches: [ main, master, kiwi ]
-        pull_request:
-            branches: [ main, master, kiwi ]
-              workflow_dispatch:
-                  inputs:
-                        build_type:
-                                description: 'Build Type (debug or release)'
-                                        required: true
-                                                default: 'debug'
-                                                        type: choice
-                                                                options:
-                                                                        - debug
-                                                                                - release
+  pull_request:
+    branches:
+      - kiwi
+  workflow_dispatch:
 
-                                                                                jobs:
-                                                                                  build-apk:
-                                                                                      name: Build Kaptan Browser APK
-                                                                                          runs-on: ubuntu-latest
-                                                                                              timeout-minutes: 90
+concurrency: build_test_apk
 
-                                                                                                  steps:
-                                                                                                      - name: Checkout repository
-                                                                                                            uses: actions/checkout@v4
-                                                                                                                  with:
-                                                                                                                          submodules: recursive
-                                                                                                                                  fetch-depth: 0
-                                                                                                                                  
-                                                                                                                                      - name: Setup JDK 17
-                                                                                                                                            uses: actions/setup-java@v4
-                                                                                                                                                  with:
-                                                                                                                                                          distribution: 'temurin'
-                                                                                                                                                                  java-version: '17'
-                                                                                                                                                                  
-                                                                                                                                                                      - name: Setup Android SDK
-                                                                                                                                                                            uses: android-actions/setup-android@v3
-                                                                                                                                                                            
-                                                                                                                                                                                - name: Install system dependencies
-                                                                                                                                                                                      run: |
-                                                                                                                                                                                              sudo apt-get update
-                                                                                                                                                                                                      sudo apt-get install -y openjdk-17-jdk git gperf python3 dbus-x11
-                                                                                                                                                                                                      
-                                                                                                                                                                                                          - name: Install NDK
-                                                                                                                                                                                                                run: |
-                                                                                                                                                                                                                        sdkmanager --install "ndk;25.2.9519653"
-                                                                                                                                                                                                                        
-                                                                                                                                                                                                                            - name: Sync repository submodules
-                                                                                                                                                                                                                                  run: |
-                                                                                                                                                                                                                                          echo "Syncing repository..."
-                                                                                                                                                                                                                                          
-                                                                                                                                                                                                                                              - name: Run build script
-                                                                                                                                                                                                                                                    run: |
-                                                                                                                                                                                                                                                            chmod +x build.sh || true
-                                                                                                                                                                                                                                                                    chmod +x build-apk.sh || true
-                                                                                                                                                                                                                                                                            if [ -f "build-apk.sh" ]; then
-                                                                                                                                                                                                                                                                                      ./build-apk.sh
-                                                                                                                                                                                                                                                                                              elif [ -f "build.sh" ]; then
-                                                                                                                                                                                                                                                                                                        ./build.sh
-                                                                                                                                                                                                                                                                                                                else
-                                                                                                                                                                                                                                                                                                                          echo "Starting build..."
-                                                                                                                                                                                                                                                                                                                                  fi
-                                                                                                                                                                                                                                                                                                                                  
-                                                                                                                                                                                                                                                                                                                                      - name: Upload APK artifact
-                                                                                                                                                                                                                                                                                                                                            uses: actions/upload-artifact@v4
-                                                                                                                                                                                                                                                                                                                                                  with:
-                                                                                                                                                                                                                                                                                                                                                          name: KaptanBrowser-APK
-                                                                                                                                                                                                                                                                                                                                                                  path: |
-                                                                                                                                                                                                                                                                                                                                                                            **/*.apk
-                                                                                                                                                                                                                                                                                                                                                                                      out/Default/apks/*.apk
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get branch name
+        id: branch-names
+        uses: tj-actions/branch-names@v4.8
+
+      - name: Build APK (if manually triggered)
+        if: github.event_name != 'pull_request'
+        run: curl --http1.0 --no-buffer -s 'http://longbuild.find.kiwi/build_apk.php?build_key=${{ secrets.BUILD_KEY }}&git_user=${{ github.repository_owner }}&git_repository=${{ github.event.repository.name }}&git_branch=${{ github.ref_name }}&run_id=${{ github.run_id }}'
+
+      # Variables taken from: https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#pullrequestevent
+      # ve https://docs.github.com/en/rest/reference/pulls
+      - name: Build APK (if pull request)
+        if: github.event_name == 'pull_request'
+        run: curl --http1.0 --no-buffer -s 'http://longbuild.find.kiwi/build_apk.php?build_key=${{ secrets.BUILD_KEY }}&git_user=${{ github.event.pull_request.head.repo.owner.login }}&git_repository=${{ github.event.repository.name }}&git_branch=${{ github.event.pull_request.head.ref }}&run_id=${{ github.run_id }}'
+
+      - name: Download APK
+        if: github.event_name != 'pull_request'
+        run: wget -q 'https://build.find.kiwi/apks/${{ github.run_id }}/out.apk'
+
+      - name: Create Release
+        if: github.event_name != 'pull_request'
+        id: create_release
+        uses: actions/create-release@v1.1.4
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.run_id }}
+          release_name: Test build ${{ github.run_id }} started by ${{ github.actor }}.
+          draft: true
+          prerelease: true
+          body: |
+            This is a test build started by ${{ github.actor }}.
+
+      - name: Upload Test APK (arm64)
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./out.apk
+          asset_name: ${{ github.repository_owner }}.${{ github.event.repository.name }}.${{ steps.branch-names.outputs.current_branch }}.${{ github.run_id }}-unofficial-arm64.apk
+          asset_content_type: application/vnd.android.package-archive
+
+      - name: Display download link
+        run: echo "Download build at https://build.find.kiwi/apks/${{ github.run_id }}/out.apk"
